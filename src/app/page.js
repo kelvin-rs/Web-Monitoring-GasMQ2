@@ -69,7 +69,7 @@ export default function Dashboard() {
   // 5. LIFECYCLE COMPONENT (KONEKSI MQTT)
   // ==========================================
   useEffect(() => {
-    // Membuka koneksi WebSockets ke server public HiveMQ saat halaman web pertama kali dibuka
+    // Membuka koneksi WebSockets ke server public EMQX saat halaman web pertama kali dibuka
     const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt", {
       clientId: "Nextjs_Dashboard_" + Math.random().toString(16).slice(2, 8),
     });
@@ -329,7 +329,7 @@ export default function Dashboard() {
               <div>
                 <p className="text-xs text-slate-500">Jalur Transmisi</p>
                 <p className="font-semibold text-slate-800 text-sm">
-                  MQTT (HiveMQ)
+                  MQTT (EMQX)
                 </p>
               </div>
             </div>
