@@ -1,5 +1,6 @@
 "use client";
 
+// 1. IMPOR LIBRARY YANG DIBUTUHKAN
 import { useEffect, useState, useRef } from "react";
 import mqtt from "mqtt";
 import {
@@ -11,7 +12,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   Label,
-} from "recharts";
+} from "recharts"; // Untuk grafik data
 import {
   AlertTriangle,
   CheckCircle2,
@@ -21,94 +22,115 @@ import {
   Download,
   Settings2,
   Table2,
-  Flame,
-  Zap,
-} from "lucide-react";
-import { motion } from "framer-motion";
+} from "lucide-react"; // Ikon antarmuka
+import { motion } from "framer-motion"; // Untuk animasi elemen UI
 
 export default function Dashboard() {
+  // ==========================================
+  // 2. DEKLARASI STATE (PENYIMPAN DATA UI)
+  // ==========================================
   const [dataSensor, setDataSensor] = useState({
     kadar_gas: 0,
     status: "Menunggu...",
   });
   const [isConnected, setIsConnected] = useState(false);
-  const [grafikData, setGrafikData] = useState([]);
+  const [grafikData, setGrafikData] = useState([]); // Menyimpan array riwayat data untuk grafik & tabel
+  const [batasBahaya, setBatasBahaya] = useState(2000); // State untuk mengatur tampilan UI Slider
 
-  // Ambang batas awal disetel untuk nilai analog (0-4095)
-  const [batasBahaya, setBatasBahaya] = useState(2000);
-
+  // ==========================================
+  // 3. DEKLARASI REF (PENYIMPAN DATA LATAR BELAKANG)
+  // ==========================================
+  // useRef digunakan untuk menyimpan data yang tidak memicu render ulang (re-render) pada UI saat nilainya berubah
   const mqttClientRef = useRef(null);
-  const waktuTelegramTerakhir = useRef(0);
-  const batasBahayaRef = useRef(2000);
+  const waktuTelegramTerakhir = useRef(0); // Timer untuk mencegah bot Telegram melakukan spam
+  const batasBahayaRef = useRef(2000); // Menyimpan nilai batas terkini agar bisa dibaca oleh fungsi MQTT di latar belakang
 
+  // ==========================================
+  // 4. FUNGSI PENGIRIMAN TELEGRAM
+  // ==========================================
   const kirimTelegram = async (kadarGas, batas) => {
     const sekarang = Date.now();
-    // Mencegah spam Telegram (Jeda 10 detik)
+
+    // Sistem Anti-Spam: Pesan hanya akan dikirim jika sudah lewat 10 detik dari pesan sebelumnya
     if (sekarang - waktuTelegramTerakhir.current < 10000) return;
     waktuTelegramTerakhir.current = sekarang;
 
     const token = "8887405090:AAGoVfRrWr7UDG33NQElmDy7wQF9qXJPBwo";
     const chatId = "6192187715";
-
-    // Teks pesan sudah disesuaikan untuk nilai Analog (bukan PPM)
     const pesan = `⚠️ PERINGATAN DARURAT!\nKebocoran gas LPG terdeteksi.\nNilai sensor saat ini: ${kadarGas} (Melewati batas toleransi analog ${batas})`;
 
+    // Menembak API Telegram menggunakan HTTP Request biasa
     fetch(
       `https://api.telegram.org/bot${token}/sendMessage?chat_id=${chatId}&text=${encodeURIComponent(pesan)}`,
     ).catch((err) => console.error("Gagal mengirim Telegram:", err));
   };
 
+  // ==========================================
+  // 5. LIFECYCLE COMPONENT (KONEKSI MQTT)
+  // ==========================================
   useEffect(() => {
-    // Terhubung ke EMQX Public Broker menggunakan protokol keamanan WSS
+    // Membuka koneksi WebSockets ke server public EMQX saat halaman web pertama kali dibuka
     const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt", {
       clientId: "Nextjs_Dashboard_" + Math.random().toString(16).slice(2, 8),
     });
 
     mqttClientRef.current = client;
 
+    // Jika koneksi berhasil...
     client.on("connect", () => {
       setIsConnected(true);
+      // Mulai mendengarkan (subscribe) topik pengiriman data dari ESP32 (Wokwi)
       client.subscribe("mikrokontroller/kelvin/sensor-gas/data");
     });
 
+    // Jika ada pesan baru masuk dari ESP32...
     client.on("message", (topic, message) => {
       if (topic === "mikrokontroller/kelvin/sensor-gas/data") {
+        // Ekstrak data teks (String) menjadi objek JavaScript (JSON)
         const payload = JSON.parse(message.toString());
-        setDataSensor(payload);
+        setDataSensor(payload); // Perbarui tampilan kartu UI utama
 
+        // Dapatkan format jam saat ini
         const waktuSekarang = new Date().toLocaleTimeString("id-ID", {
           hour: "2-digit",
           minute: "2-digit",
           second: "2-digit",
         });
 
+        // Masukkan data baru ke dalam array grafik
         setGrafikData((prev) => {
           const newData = [
             ...prev,
             { waktu: waktuSekarang, gas: payload.kadar_gas },
           ];
-          if (newData.length > 20) newData.shift(); // Batasi grafik maksimal 20 data terakhir
+          // Buang data paling lama jika jumlah data sudah lebih dari 20 (agar grafik tidak tumpang tindih)
+          if (newData.length > 20) newData.shift();
           return newData;
         });
 
-        // Logika Pemicu Bahaya
+        // Evaluasi Keamanan: Bandingkan data sensor dengan nilai ambang batas terbaru
         if (payload.kadar_gas >= batasBahayaRef.current) {
           kirimTelegram(payload.kadar_gas, batasBahayaRef.current);
         }
       }
     });
 
+    // Cleanup Function: Putuskan koneksi MQTT secara aman jika pengguna menutup tab browser
     return () => {
       if (client) client.end();
     };
-  }, []);
+  }, []); // Array kosong [] memastikan fungsi ini hanya berjalan satu kali saat halaman dimuat
 
+  // ==========================================
+  // 6. FUNGSI KONTROL SLIDER (KIRIM PERINTAH KE WOKWI)
+  // ==========================================
   const ubahBatas = (e) => {
-    const nilaiBaru = parseInt(e.target.value);
-    setBatasBahaya(nilaiBaru);
-    batasBahayaRef.current = nilaiBaru;
+    const nilaiBaru = parseInt(e.target.value); // Ambil angka dari pergerakan slider
 
-    // Sinkronisasi batas baru ke ESP32 secara realtime
+    setBatasBahaya(nilaiBaru); // Update UI slider
+    batasBahayaRef.current = nilaiBaru; // Update variabel background untuk logika Telegram
+
+    // Kirim pesan (Publish) ke Wokwi agar alat mengubah nilai batasnya secara sinkron
     if (mqttClientRef.current && isConnected) {
       mqttClientRef.current.publish(
         "mikrokontroller/kelvin/sensor-gas/batas",
@@ -117,372 +139,357 @@ export default function Dashboard() {
     }
   };
 
+  // ==========================================
+  // 7. FUNGSI EXPORT DATA (DOWNLOAD CSV)
+  // ==========================================
   const downloadCSV = () => {
     if (grafikData.length === 0) return alert("Belum ada data untuk diunduh");
 
-    // Header CSV disesuaikan dengan nilai Analog
-    const header = "Waktu,Nilai Analog Sensor\n";
+    // Membuat struktur kolom Excel
+    const header = "Waktu,Nilai Analog Sensor\n"
+    // Menggabungkan seluruh isi array data menjadi baris teks yang dipisahkan koma
     const csvContent = grafikData
       .map((row) => `${row.waktu},${row.gas}`)
       .join("\n");
 
+    // Mengonversi teks menjadi file fisik yang bisa diunduh oleh browser (Blob object)
     const blob = new Blob([header + csvContent], {
       type: "text/csv;charset=utf-8;",
     });
     const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `log_analog_gas_${new Date().getTime()}.csv`;
+    const url = URL.createObjectURL(blob);
+
+    link.setAttribute("href", url);
+    link.setAttribute("download", `log_gas_${new Date().getTime()}.csv`);
+    link.style.visibility = "hidden";
+
+    // Memicu unduhan secara otomatis tanpa mengarahkan ke halaman baru
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
   };
 
+  // Konfigurasi animasi transisi munculnya elemen antarmuka (Framer Motion)
   const itemVariants = {
-    hidden: { opacity: 0, y: 30 },
-    visible: {
-      opacity: 1,
-      y: 0,
-      transition: { duration: 0.6, ease: "easeOut" },
-    },
+    hidden: { opacity: 0, y: 20 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.5 } },
   };
 
+  // ==========================================
+  // 8. STRUKTUR TAMPILAN ANTARMUKA (UI / HTML)
+  // ==========================================
   return (
-    <div className="transition-colors duration-500">
-      <main className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans overflow-x-hidden text-slate-800">
-        <motion.div
-          className="max-w-7xl mx-auto space-y-8"
-          initial="hidden"
-          animate="visible"
-          variants={{ visible: { transition: { staggerChildren: 0.15 } } }}
+    <main className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans overflow-x-hidden">
+      <motion.div
+        className="max-w-7xl mx-auto space-y-6"
+        initial="hidden"
+        animate="visible"
+        variants={{ visible: { transition: { staggerChildren: 0.1 } } }} // Menampilkan elemen berurutan (Cascade Effect)
+      >
+        {/* BAGIAN 1: HEADER HALAMAN */}
+        <motion.header
+          variants={itemVariants}
+          className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-2xl shadow-sm border border-slate-200"
         >
-          {/* HEADER PUSAT KENDALI */}
-          <motion.header
-            variants={itemVariants}
-            className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-[2rem] shadow-sm border border-slate-200"
+          <div>
+            <h1 className="text-3xl font-bold text-slate-800 tracking-tight">
+              Sistem Monitoring Terpusat
+            </h1>
+            <p className="text-slate-500 mt-1">
+              Pemantauan Gas LPG Area Dapur Utama
+            </p>
+          </div>
+
+          {/* Indikator Status Koneksi (Merah = Offline, Hijau = Online) */}
+          <div
+            className={`mt-4 md:mt-0 flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-colors duration-500 ${isConnected ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}
           >
-            <div>
-              <h1 className="text-3xl font-black tracking-tight flex items-center gap-3">
-                Sistem Monitoring{" "}
-                <Flame className="text-blue-500 animate-pulse" size={28} />
-              </h1>
-              <p className="text-slate-500 mt-1 font-medium">
-                Pemantauan Gas LPG Area Dapur Utama
-              </p>
-            </div>
-
-            <div className="mt-4 md:mt-0 flex items-center gap-4">
-              {/* Indikator Status Koneksi */}
-              <div
-                className={`flex items-center gap-3 px-5 py-3 rounded-full font-bold transition-all duration-500 shadow-inner tracking-wide ${isConnected ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}
-              >
-                <span className="relative flex h-3.5 w-3.5">
-                  {isConnected && (
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                  )}
-                  <span
-                    className={`relative inline-flex rounded-full h-3.5 w-3.5 ${isConnected ? "bg-green-500" : "bg-red-500"}`}
-                  ></span>
-                </span>
-                {isConnected ? "Sistem Online" : "Sistem Offline"}
-              </div>
-            </div>
-          </motion.header>
-
-          {/* GRID 4 KARTU METRIK */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-            {/* KARTU 1: NILAI ANALOG */}
-            <motion.div
-              variants={itemVariants}
-              className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-200 flex flex-col justify-between hover-rgb-glow relative overflow-hidden group cursor-pointer"
-            >
-              <div className="absolute -right-6 -top-6 text-blue-500/5 transition-transform duration-700 group-hover:rotate-180 group-hover:scale-150">
-                <Wind size={150} />
-              </div>
-              <div className="relative z-10 flex justify-between items-start">
-                <div>
-                  <p className="text-slate-500 font-bold uppercase tracking-wider text-xs group-hover:text-blue-500 transition-colors">
-                    Tegangan Sensor (Analog)
-                  </p>
-                  <h2 className="text-5xl lg:text-6xl font-black text-blue-600 mt-2">
-                    {dataSensor.kadar_gas}
-                  </h2>
-                </div>
-                <div className="p-3 bg-blue-50 text-blue-500 rounded-2xl shadow-inner group-hover:bg-blue-500 group-hover:text-white transition-colors">
-                  <Wind size={28} />
-                </div>
-              </div>
-              <div className="relative z-10 mt-6 w-full bg-slate-100 h-2.5 rounded-full overflow-hidden shadow-inner">
-                {/* Progress bar disesuaikan dengan skala maksimal ADC ESP32 (4095) */}
-                <motion.div
-                  className={`h-full ${dataSensor.kadar_gas >= batasBahaya ? "bg-red-500" : "bg-gradient-to-r from-blue-400 to-blue-600"}`}
-                  initial={{ width: 0 }}
-                  animate={{
-                    width: `${Math.min((dataSensor.kadar_gas / 4095) * 100, 100)}%`,
-                  }}
-                  transition={{ duration: 0.3 }}
-                />
-              </div>
-            </motion.div>
-
-            {/* KARTU 2: STATUS KEAMANAN */}
-            <motion.div
-              variants={itemVariants}
-              className={`p-6 rounded-[2rem] shadow-sm border flex flex-col justify-center items-center text-center transition-all duration-500 overflow-hidden hover-rgb-glow cursor-pointer relative ${dataSensor.status === "BAHAYA" ? "bg-red-50 border-red-200" : "bg-white border-slate-200"}`}
-            >
-              {dataSensor.status === "BAHAYA" && (
-                <div className="absolute inset-0 bg-red-500/20 animate-pulse blur-2xl"></div>
+            <span className="relative flex h-3 w-3">
+              {isConnected && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
               )}
-              <div className="relative z-10">
-                {dataSensor.status === "BAHAYA" ? (
-                  <AlertTriangle
-                    size={64}
-                    className="text-red-500 mb-3 animate-bounce drop-shadow-[0_0_15px_rgba(239,68,68,0.5)] mx-auto"
-                  />
-                ) : (
-                  <CheckCircle2
-                    size={64}
-                    className="text-green-500 mb-3 drop-shadow-[0_0_15px_rgba(34,197,94,0.4)] mx-auto"
-                  />
-                )}
-                <h3
-                  className={`text-2xl font-black tracking-widest ${dataSensor.status === "BAHAYA" ? "text-red-700" : "text-green-700"}`}
-                >
-                  {dataSensor.status}
-                </h3>
-              </div>
-            </motion.div>
+              <span
+                className={`relative inline-flex rounded-full h-3 w-3 ${isConnected ? "bg-green-500" : "bg-red-500"}`}
+              ></span>
+            </span>
+            {isConnected ? "Sistem Online" : "Sistem Offline"}
+          </div>
+        </motion.header>
 
-            {/* KARTU 3: SLIDER KONTROL AMBANG BATAS */}
-            <motion.div
-              variants={itemVariants}
-              className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-200 flex flex-col justify-center hover-rgb-glow cursor-pointer group"
+        {/* BAGIAN 2: GRID KARTU METRIK UTAMA (4 KOLOM) */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {/* Kartu 1: Menampilkan angka kuantitatif nilai gas saat ini */}
+          <motion.div
+            variants={itemVariants}
+            className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between hover:shadow-md transition-shadow"
+          >
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="text-slate-500 font-medium">Konsentrasi Gas</p>
+                <h2 className="text-4xl lg:text-5xl font-black text-blue-600 mt-2">
+                  {dataSensor.kadar_gas}{" "}
+                  <span className="text-lg lg:text-xl text-slate-400 font-medium">
+                    Gas
+                  </span>
+                </h2>
+              </div>
+              <div className="p-3 bg-blue-50 text-blue-500 rounded-xl">
+                <Wind size={28} />
+              </div>
+            </div>
+
+            {/* Bar indikator kemiringan bahaya (Progress Bar) */}
+            <div className="mt-6 w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+              <motion.div
+                className={`h-full ${dataSensor.kadar_gas >= batasBahaya ? "bg-red-500" : "bg-blue-500"}`}
+                initial={{ width: 0 }}
+                animate={{
+                  width: `${Math.min((dataSensor.kadar_gas / 4095) * 100, 100)}%`,
+                }} // Konversi nilai maksimum ESP32 (4095) menjadi 100% panjang bar
+                transition={{ duration: 0.3 }}
+              />
+            </div>
+          </motion.div>
+
+          {/* Kartu 2: Menampilkan status AMAN/BAHAYA dengan ikon animasi dinamis */}
+          <motion.div
+            variants={itemVariants}
+            className={`p-6 rounded-2xl shadow-sm border flex flex-col justify-center items-center text-center transition-colors duration-500 ${dataSensor.status === "BAHAYA" ? "bg-red-50 border-red-200" : "bg-green-50 border-green-200"}`}
+          >
+            {dataSensor.status === "BAHAYA" ? (
+              <AlertTriangle
+                size={48}
+                className="text-red-500 mb-2 animate-bounce"
+              />
+            ) : (
+              <CheckCircle2 size={48} className="text-green-500 mb-2" />
+            )}
+            <h3
+              className={`text-xl font-bold ${dataSensor.status === "BAHAYA" ? "text-red-700" : "text-green-700"}`}
             >
-              <div className="flex items-center gap-2 mb-5">
-                <Settings2
-                  size={20}
-                  className="text-blue-500 group-hover:rotate-180 transition-transform duration-700"
-                />
-                <p className="font-bold uppercase tracking-wider text-xs">
-                  Ambang Batas Alarm (ADC)
+              STATUS: {dataSensor.status}
+            </h3>
+            <p
+              className={`mt-1 text-xs ${dataSensor.status === "BAHAYA" ? "text-red-600/80" : "text-green-600/80"}`}
+            >
+              {dataSensor.status === "BAHAYA"
+                ? "Evakuasi area segera!"
+                : "Udara batas normal"}
+            </p>
+          </motion.div>
+
+          {/* Kartu 3: Slider interaktif untuk mengubah ambang batas keamanan */}
+          <motion.div
+            variants={itemVariants}
+            className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-center"
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <Settings2 size={20} className="text-slate-600" />
+              <p className="text-slate-700 font-bold">Ambang Batas Alarm</p>
+            </div>
+            {/* Input Slider dibatasi minimal 1500 agar pengguna tidak asal mematikan alarm keamanan (Safety Practice) */}
+            <input
+              type="range"
+              min="1500"
+              max="4000"
+              step="100"
+              value={batasBahaya}
+              onChange={ubahBatas}
+              className="w-full accent-blue-600 cursor-pointer h-2 bg-slate-200 rounded-lg appearance-none"
+            />
+            <div className="flex justify-between mt-3 text-sm font-semibold">
+              <span className="text-slate-400">1500</span>
+              <span className="text-blue-600 px-2 py-1 bg-blue-50 rounded-lg">
+                {batasBahaya}
+              </span>
+              <span className="text-slate-400">4000</span>
+            </div>
+          </motion.div>
+
+          {/* Kartu 4: Identitas alat fisik (Mockup Hardware) yang sedang dipantau */}
+          <motion.div
+            variants={itemVariants}
+            className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-center space-y-4 hover:shadow-md transition-shadow"
+          >
+            <div className="flex items-center gap-4">
+              <div className="p-3 bg-slate-100 text-slate-600 rounded-xl">
+                <Activity size={20} />
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">ID Perangkat</p>
+                <p className="font-semibold text-slate-800 text-sm">
+                  ESP32-NODE-01
                 </p>
               </div>
-              <input
-                type="range"
-                min="500"
-                max="4095"
-                step="50"
-                value={batasBahaya}
-                onChange={ubahBatas}
-                className="w-full accent-blue-600 cursor-grab active:cursor-grabbing h-2.5 bg-slate-200 rounded-lg appearance-none shadow-inner transition-all group-hover:accent-purple-500"
-              />
-              <div className="flex justify-between mt-4 text-sm font-bold">
-                <span className="text-slate-400">500</span>
-                <motion.span
-                  key={batasBahaya}
-                  initial={{ scale: 1.5, color: "#a855f7" }}
-                  animate={{ scale: 1, color: "#2563eb" }}
-                  className="px-3 py-1 bg-slate-100 text-blue-600 rounded-xl shadow-sm"
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="p-3 bg-slate-100 text-slate-600 rounded-xl">
+                <Wifi size={20} />
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">Jalur Transmisi</p>
+                <p className="font-semibold text-slate-800 text-sm">
+                  MQTT (EMQX)
+                </p>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+
+        {/* BAGIAN 3: AREA VISUALISASI DATA BAWAH */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Panel Kiri (Memakan 2/3 layar): Grafik Riwayat Nilai Fluktuasi (Recharts) */}
+          <motion.div
+            variants={itemVariants}
+            className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200 h-[420px] flex flex-col"
+          >
+            <h3 className="text-lg font-bold text-slate-800 mb-4">
+              Fluktuasi Gas Real-time
+            </h3>
+            <div className="flex-1 w-full min-h-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={grafikData}
+                  margin={{ top: 10, right: 20, bottom: 20, left: 10 }}
                 >
-                  {batasBahaya}
-                </motion.span>
-                <span className="text-slate-400">4095</span>
-              </div>
-            </motion.div>
-
-            {/* KARTU 4: INFORMASI PERANGKAT */}
-            <motion.div
-              variants={itemVariants}
-              className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-200 flex flex-col justify-center space-y-5 hover-rgb-glow cursor-pointer group relative overflow-hidden"
-            >
-              <div className="absolute -bottom-6 -right-6 text-slate-100 group-hover:rotate-12 transition-transform duration-500">
-                <Zap size={120} />
-              </div>
-              <div className="relative z-10 flex items-center gap-4">
-                <div className="p-3.5 bg-slate-100 rounded-2xl group-hover:bg-purple-100 group-hover:text-purple-600 transition-colors">
-                  <Activity size={22} />
-                </div>
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                    ID Perangkat
-                  </p>
-                  <p className="font-black text-sm tracking-wide mt-0.5">
-                    ESP32-NODE-01
-                  </p>
-                </div>
-              </div>
-              <div className="relative z-10 flex items-center gap-4">
-                <div className="p-3.5 bg-slate-100 rounded-2xl group-hover:bg-green-100 group-hover:text-green-600 transition-colors">
-                  <Wifi size={22} />
-                </div>
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                    Jalur Transmisi
-                  </p>
-                  <p className="font-black text-sm tracking-wide mt-0.5">
-                    MQTT (EMQX Server)
-                  </p>
-                </div>
-              </div>
-            </motion.div>
-          </div>
-
-          {/* AREA BAWAH: GRAFIK & TABEL */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* PANEL GRAFIK REAL-TIME */}
-            <motion.div
-              variants={itemVariants}
-              className="lg:col-span-2 bg-white p-6 md:p-8 rounded-[2rem] shadow-sm border border-slate-200 h-[450px] flex flex-col hover-rgb-glow"
-            >
-              <h3 className="text-xl font-bold mb-6 flex items-center gap-3">
-                <Activity className="text-blue-500" /> Live Data Stream
-              </h3>
-              <div className="flex-1 w-full min-h-0">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart
-                    data={grafikData}
-                    margin={{ top: 10, right: 20, bottom: 20, left: 10 }}
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    stroke="#e2e8f0"
+                    vertical={false}
+                  />
+                  <XAxis
+                    dataKey="waktu"
+                    stroke="#64748b"
+                    fontSize={12}
+                    tickMargin={15}
                   >
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      stroke="#e2e8f0"
-                      vertical={false}
+                    <Label
+                      value="Waktu Penerimaan"
+                      offset={-15}
+                      position="insideBottom"
+                      style={{ fill: "#475569", fontSize: 13, fontWeight: 500 }}
                     />
-                    <XAxis
-                      dataKey="waktu"
-                      stroke="#64748b"
-                      fontSize={12}
-                      tickMargin={15}
-                    />
-                    <YAxis
-                      stroke="#64748b"
-                      fontSize={12}
-                      domain={[0, 4095]}
-                      tickCount={6}
-                    >
-                      <Label
-                        value="Nilai Analog (0-4095)"
-                        angle={-90}
-                        position="insideLeft"
-                        offset={-5}
-                        style={{
-                          textAnchor: "middle",
-                          fill: "#475569",
-                          fontSize: 13,
-                          fontWeight: 500,
-                        }}
-                      />
-                    </YAxis>
-                    <Tooltip
-                      contentStyle={{
-                        borderRadius: "16px",
-                        border: "none",
-                        backgroundColor: "#ffffff",
-                        color: "#0f172a",
-                        boxShadow: "0 20px 25px -5px rgb(0 0 0 / 0.2)",
+                  </XAxis>
+                  <YAxis
+                    stroke="#64748b"
+                    fontSize={12}
+                    domain={[0, 4095]}
+                    tickCount={6}
+                  >
+                    <Label
+                      value="Kadar Gas (Analog)"
+                      angle={-90}
+                      position="insideLeft"
+                      offset={-5}
+                      style={{
+                        textAnchor: "middle",
+                        fill: "#475569",
+                        fontSize: 13,
+                        fontWeight: 500,
                       }}
                     />
-                    <Line
-                      type="monotone"
-                      dataKey={() => batasBahaya}
-                      stroke="#ef4444"
-                      strokeWidth={2}
-                      strokeDasharray="5 5"
-                      dot={false}
-                      activeDot={false}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="gas"
-                      stroke="url(#colorUv)"
-                      strokeWidth={4}
-                      dot={{
-                        r: 5,
-                        strokeWidth: 3,
-                        fill: "#ffffff",
-                        stroke: "#3b82f6",
-                      }}
-                      activeDot={{
-                        r: 8,
-                        strokeWidth: 0,
-                        fill: "#00e5ff",
-                        className: "animate-ping",
-                      }}
-                      animationDuration={400}
-                    />
-                    <defs>
-                      <linearGradient id="colorUv" x1="0" y1="0" x2="1" y2="0">
-                        <stop offset="5%" stopColor="#3b82f6" stopOpacity={1} />
-                        <stop
-                          offset="95%"
-                          stopColor="#a855f7"
-                          stopOpacity={1}
-                        />
-                      </linearGradient>
-                    </defs>
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </motion.div>
+                  </YAxis>
+                  <Tooltip
+                    contentStyle={{
+                      borderRadius: "12px",
+                      border: "none",
+                      boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)",
+                    }}
+                  />
 
-            {/* PANEL TABEL RIWAYAT LOG */}
-            <motion.div
-              variants={itemVariants}
-              className="bg-white p-6 md:p-8 rounded-[2rem] shadow-sm border border-slate-200 h-[450px] flex flex-col hover-rgb-glow"
-            >
-              <div className="flex justify-between items-center mb-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-slate-100 rounded-lg">
-                    <Table2 size={20} className="text-slate-600" />
-                  </div>
-                  <h3 className="text-xl font-bold">Log Data</h3>
-                </div>
-                <motion.button
-                  whileHover={{ scale: 1.05, backgroundColor: "#15803d" }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={downloadCSV}
-                  className="flex items-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-xl text-sm font-bold shadow-[0_4px_14px_0_rgba(22,163,74,0.39)] transition-colors"
-                >
-                  <Download size={18} /> Ekspor
-                </motion.button>
+                  {/* Menampilkan Garis Merah statis sebagai indikator visual dari ambang batas */}
+                  <Line
+                    type="monotone"
+                    dataKey={() => batasBahaya}
+                    stroke="#ef4444"
+                    strokeWidth={2}
+                    strokeDasharray="5 5"
+                    dot={false}
+                    activeDot={false}
+                  />
+
+                  {/* Menampilkan Garis Biru pergerakan sensor dengan efek titik menyala */}
+                  <Line
+                    type="monotone"
+                    dataKey="gas"
+                    stroke="#3b82f6"
+                    strokeWidth={3}
+                    dot={{ r: 4, strokeWidth: 2 }}
+                    activeDot={{
+                      r: 6,
+                      strokeWidth: 0,
+                      className: "animate-ping",
+                    }}
+                    animationDuration={400}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </motion.div>
+
+          {/* Panel Kanan (Memakan 1/3 layar): Tabel Data Log & Tombol Ekspor CSV */}
+          <motion.div
+            variants={itemVariants}
+            className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 h-[420px] flex flex-col"
+          >
+            <div className="flex justify-between items-center mb-4">
+              <div className="flex items-center gap-2">
+                <Table2 size={20} className="text-slate-600" />
+                <h3 className="text-lg font-bold text-slate-800">
+                  Riwayat Data
+                </h3>
               </div>
-              <div className="overflow-y-auto flex-1 pr-3 rounded-2xl border border-slate-100 bg-slate-50 shadow-inner custom-scrollbar">
-                <table className="w-full text-sm text-left">
-                  <thead className="sticky top-0 bg-white/90 backdrop-blur-sm z-10">
-                    <tr className="text-slate-500 border-b border-slate-200">
-                      <th className="py-4 px-5 font-bold uppercase tracking-wider text-xs">
-                        Waktu
-                      </th>
-                      <th className="py-4 px-5 font-bold uppercase tracking-wider text-xs text-right">
-                        Analog
-                      </th>
+              <button
+                onClick={downloadCSV}
+                className="flex items-center gap-2 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm"
+              >
+                <Download size={16} /> Ekspor
+              </button>
+            </div>
+
+            {/* Container tabel dengan fitur scroll internal untuk mencegah halaman meluber ke bawah */}
+            <div className="overflow-y-auto flex-1 pr-2 rounded-lg border border-slate-100">
+              <table className="w-full text-sm text-left">
+                <thead className="sticky top-0 bg-slate-50 shadow-sm">
+                  <tr className="text-slate-500 border-b border-slate-200">
+                    <th className="py-3 px-4 font-semibold">Waktu</th>
+                    <th className="py-3 px-4 font-semibold">Gas (Analog)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* Menampilkan array data grafik dalam urutan terbalik agar data terbaru berada di posisi paling atas (Reverse Order) */}
+                  {[...grafikData].reverse().map((data, index) => (
+                    <tr
+                      key={index}
+                      className="border-b border-slate-50 hover:bg-slate-50 transition-colors last:border-0"
+                    >
+                      <td className="py-3 px-4 text-slate-600">{data.waktu}</td>
+                      <td className="py-3 px-4 font-medium text-slate-800">
+                        <span
+                          className={`px-2 py-1 rounded-md ${data.gas >= batasBahaya ? "bg-red-100 text-red-600" : "bg-slate-100"}`}
+                        >
+                          {data.gas}
+                        </span>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {[...grafikData].reverse().map((data, index) => (
-                      <motion.tr
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ duration: 0.4, type: "spring" }}
-                        key={index}
-                        className="border-b border-slate-100 hover:bg-white transition-colors last:border-0 group"
+                  ))}
+                  {/* Teks placeholder (pengganti) jika server belum menerima data dari Wokwi sama sekali */}
+                  {grafikData.length === 0 && (
+                    <tr>
+                      <td
+                        colSpan="2"
+                        className="py-8 text-center text-slate-400 italic"
                       >
-                        <td className="py-3 px-5 text-slate-600 font-medium group-hover:text-blue-500 transition-colors">
-                          {data.waktu}
-                        </td>
-                        <td className="py-3 px-5 text-right font-black">
-                          <span
-                            className={`px-3 py-1.5 rounded-lg shadow-sm ${data.gas >= batasBahaya ? "bg-red-500 text-white" : "bg-white text-slate-700 border border-slate-200"}`}
-                          >
-                            {data.gas}
-                          </span>
-                        </td>
-                      </motion.tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </motion.div>
-          </div>
-        </motion.div>
-      </main>
-    </div>
+                        Menunggu data masuk...
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </motion.div>
+        </div>
+      </motion.div>
+    </main>
   );
 }
