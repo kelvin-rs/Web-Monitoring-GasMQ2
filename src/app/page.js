@@ -70,7 +70,7 @@ export default function Dashboard() {
   // ==========================================
   useEffect(() => {
     // Membuka koneksi WebSockets ke server public HiveMQ saat halaman web pertama kali dibuka
-    const client = mqtt.connect("ws://broker.hivemq.com:8000/mqtt", {
+    const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt", {
       clientId: "Nextjs_Dashboard_" + Math.random().toString(16).slice(2, 8),
     });
 
