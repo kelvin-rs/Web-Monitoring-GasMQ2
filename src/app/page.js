@@ -21,12 +21,10 @@ import {
   Download,
   Settings2,
   Table2,
-  Moon,
-  Sun,
   Flame,
   Zap,
 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 
 export default function Dashboard() {
   const [dataSensor, setDataSensor] = useState({
@@ -35,30 +33,24 @@ export default function Dashboard() {
   });
   const [isConnected, setIsConnected] = useState(false);
   const [grafikData, setGrafikData] = useState([]);
-  const [batasBahaya, setBatasBahaya] = useState(2000);
 
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  // Ambang batas awal disetel untuk nilai analog (0-4095)
+  const [batasBahaya, setBatasBahaya] = useState(2000);
 
   const mqttClientRef = useRef(null);
   const waktuTelegramTerakhir = useRef(0);
   const batasBahayaRef = useRef(2000);
 
-  useEffect(() => {
-    if (isDarkMode) {
-      document.documentElement.classList.add("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-    }
-  }, [isDarkMode]);
-
   const kirimTelegram = async (kadarGas, batas) => {
     const sekarang = Date.now();
+    // Mencegah spam Telegram (Jeda 10 detik)
     if (sekarang - waktuTelegramTerakhir.current < 10000) return;
     waktuTelegramTerakhir.current = sekarang;
 
     const token = "8887405090:AAGoVfRrWr7UDG33NQElmDy7wQF9qXJPBwo";
     const chatId = "6192187715";
-    // Teks Telegram dibersihkan dari satuan PPM
+
+    // Teks pesan sudah disesuaikan untuk nilai Analog (bukan PPM)
     const pesan = `⚠️ PERINGATAN DARURAT!\nKebocoran gas LPG terdeteksi.\nNilai sensor saat ini: ${kadarGas} (Melewati batas toleransi analog ${batas})`;
 
     fetch(
@@ -67,13 +59,7 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    if (
-      window.matchMedia &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches
-    ) {
-      setIsDarkMode(true);
-    }
-
+    // Terhubung ke EMQX Public Broker menggunakan protokol keamanan WSS
     const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt", {
       clientId: "Nextjs_Dashboard_" + Math.random().toString(16).slice(2, 8),
     });
@@ -101,10 +87,11 @@ export default function Dashboard() {
             ...prev,
             { waktu: waktuSekarang, gas: payload.kadar_gas },
           ];
-          if (newData.length > 20) newData.shift();
+          if (newData.length > 20) newData.shift(); // Batasi grafik maksimal 20 data terakhir
           return newData;
         });
 
+        // Logika Pemicu Bahaya
         if (payload.kadar_gas >= batasBahayaRef.current) {
           kirimTelegram(payload.kadar_gas, batasBahayaRef.current);
         }
@@ -121,6 +108,7 @@ export default function Dashboard() {
     setBatasBahaya(nilaiBaru);
     batasBahayaRef.current = nilaiBaru;
 
+    // Sinkronisasi batas baru ke ESP32 secara realtime
     if (mqttClientRef.current && isConnected) {
       mqttClientRef.current.publish(
         "mikrokontroller/kelvin/sensor-gas/batas",
@@ -131,10 +119,13 @@ export default function Dashboard() {
 
   const downloadCSV = () => {
     if (grafikData.length === 0) return alert("Belum ada data untuk diunduh");
+
+    // Header CSV disesuaikan dengan nilai Analog
     const header = "Waktu,Nilai Analog Sensor\n";
     const csvContent = grafikData
       .map((row) => `${row.waktu},${row.gas}`)
       .join("\n");
+
     const blob = new Blob([header + csvContent], {
       type: "text/csv;charset=utf-8;",
     });
@@ -154,49 +145,33 @@ export default function Dashboard() {
   };
 
   return (
-    <div
-      className={`${isDarkMode ? "dark" : ""} transition-colors duration-500`}
-    >
-      <main className="min-h-screen bg-slate-50 dark:bg-slate-950 p-4 md:p-8 font-sans overflow-x-hidden transition-colors duration-500 text-slate-800 dark:text-slate-200">
+    <div className="transition-colors duration-500">
+      <main className="min-h-screen bg-slate-50 p-4 md:p-8 font-sans overflow-x-hidden text-slate-800">
         <motion.div
           className="max-w-7xl mx-auto space-y-8"
           initial="hidden"
           animate="visible"
           variants={{ visible: { transition: { staggerChildren: 0.15 } } }}
         >
-          {/* HEADER */}
+          {/* HEADER PUSAT KENDALI */}
           <motion.header
             variants={itemVariants}
-            className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white dark:bg-slate-900 p-6 rounded-[2rem] shadow-sm border border-slate-200 dark:border-slate-800 transition-colors"
+            className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-[2rem] shadow-sm border border-slate-200"
           >
             <div>
               <h1 className="text-3xl font-black tracking-tight flex items-center gap-3">
                 Sistem Monitoring{" "}
                 <Flame className="text-blue-500 animate-pulse" size={28} />
               </h1>
-              <p className="text-slate-500 dark:text-slate-400 mt-1 font-medium">
+              <p className="text-slate-500 mt-1 font-medium">
                 Pemantauan Gas LPG Area Dapur Utama
               </p>
             </div>
 
             <div className="mt-4 md:mt-0 flex items-center gap-4">
-              <motion.button
-                whileHover={{ scale: 1.15, rotate: 15 }}
-                whileTap={{ scale: 0.85 }}
-                onClick={() => setIsDarkMode(!isDarkMode)}
-                className="p-3.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-blue-100 dark:hover:bg-blue-900 transition-colors cursor-pointer shadow-inner"
-              >
-                <AnimatePresence mode="wait">
-                  {isDarkMode ? (
-                    <Sun key="sun" size={22} className="text-yellow-400" />
-                  ) : (
-                    <Moon key="moon" size={22} className="text-blue-500" />
-                  )}
-                </AnimatePresence>
-              </motion.button>
-
+              {/* Indikator Status Koneksi */}
               <div
-                className={`flex items-center gap-3 px-5 py-3 rounded-full font-bold transition-all duration-500 shadow-inner tracking-wide ${isConnected ? "bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400" : "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400"}`}
+                className={`flex items-center gap-3 px-5 py-3 rounded-full font-bold transition-all duration-500 shadow-inner tracking-wide ${isConnected ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}
               >
                 <span className="relative flex h-3.5 w-3.5">
                   {isConnected && (
@@ -213,28 +188,29 @@ export default function Dashboard() {
 
           {/* GRID 4 KARTU METRIK */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {/* KARTU 1: NILAI ANALOG */}
             <motion.div
               variants={itemVariants}
-              className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] shadow-sm border border-slate-200 dark:border-slate-800 flex flex-col justify-between hover-rgb-glow relative overflow-hidden group cursor-pointer"
+              className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-200 flex flex-col justify-between hover-rgb-glow relative overflow-hidden group cursor-pointer"
             >
-              <div className="absolute -right-6 -top-6 text-blue-500/5 dark:text-blue-500/10 transition-transform duration-700 group-hover:rotate-180 group-hover:scale-150">
+              <div className="absolute -right-6 -top-6 text-blue-500/5 transition-transform duration-700 group-hover:rotate-180 group-hover:scale-150">
                 <Wind size={150} />
               </div>
               <div className="relative z-10 flex justify-between items-start">
                 <div>
-                  <p className="text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider text-xs group-hover:text-blue-500 transition-colors">
+                  <p className="text-slate-500 font-bold uppercase tracking-wider text-xs group-hover:text-blue-500 transition-colors">
                     Tegangan Sensor (Analog)
                   </p>
-                  {/* Satuan PPM Dihapus di sini */}
-                  <h2 className="text-5xl lg:text-6xl font-black text-blue-600 dark:text-blue-400 mt-2">
+                  <h2 className="text-5xl lg:text-6xl font-black text-blue-600 mt-2">
                     {dataSensor.kadar_gas}
                   </h2>
                 </div>
-                <div className="p-3 bg-blue-50 dark:bg-blue-500/10 text-blue-500 rounded-2xl shadow-inner group-hover:bg-blue-500 group-hover:text-white transition-colors">
+                <div className="p-3 bg-blue-50 text-blue-500 rounded-2xl shadow-inner group-hover:bg-blue-500 group-hover:text-white transition-colors">
                   <Wind size={28} />
                 </div>
               </div>
-              <div className="relative z-10 mt-6 w-full bg-slate-100 dark:bg-slate-800 h-2.5 rounded-full overflow-hidden shadow-inner">
+              <div className="relative z-10 mt-6 w-full bg-slate-100 h-2.5 rounded-full overflow-hidden shadow-inner">
+                {/* Progress bar disesuaikan dengan skala maksimal ADC ESP32 (4095) */}
                 <motion.div
                   className={`h-full ${dataSensor.kadar_gas >= batasBahaya ? "bg-red-500" : "bg-gradient-to-r from-blue-400 to-blue-600"}`}
                   initial={{ width: 0 }}
@@ -246,36 +222,38 @@ export default function Dashboard() {
               </div>
             </motion.div>
 
+            {/* KARTU 2: STATUS KEAMANAN */}
             <motion.div
               variants={itemVariants}
-              className={`p-6 rounded-[2rem] shadow-sm border flex flex-col justify-center items-center text-center transition-all duration-500 overflow-hidden hover-rgb-glow cursor-pointer relative ${dataSensor.status === "BAHAYA" ? "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900" : "bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800"}`}
+              className={`p-6 rounded-[2rem] shadow-sm border flex flex-col justify-center items-center text-center transition-all duration-500 overflow-hidden hover-rgb-glow cursor-pointer relative ${dataSensor.status === "BAHAYA" ? "bg-red-50 border-red-200" : "bg-white border-slate-200"}`}
             >
               {dataSensor.status === "BAHAYA" && (
-                <div className="absolute inset-0 bg-red-500/20 dark:bg-red-600/20 animate-pulse blur-2xl"></div>
+                <div className="absolute inset-0 bg-red-500/20 animate-pulse blur-2xl"></div>
               )}
               <div className="relative z-10">
                 {dataSensor.status === "BAHAYA" ? (
                   <AlertTriangle
                     size={64}
-                    className="text-red-500 dark:text-red-400 mb-3 animate-bounce drop-shadow-[0_0_15px_rgba(239,68,68,0.5)] mx-auto"
+                    className="text-red-500 mb-3 animate-bounce drop-shadow-[0_0_15px_rgba(239,68,68,0.5)] mx-auto"
                   />
                 ) : (
                   <CheckCircle2
                     size={64}
-                    className="text-green-500 dark:text-green-400 mb-3 drop-shadow-[0_0_15px_rgba(34,197,94,0.4)] mx-auto"
+                    className="text-green-500 mb-3 drop-shadow-[0_0_15px_rgba(34,197,94,0.4)] mx-auto"
                   />
                 )}
                 <h3
-                  className={`text-2xl font-black tracking-widest ${dataSensor.status === "BAHAYA" ? "text-red-700 dark:text-red-400" : "text-green-700 dark:text-green-400"}`}
+                  className={`text-2xl font-black tracking-widest ${dataSensor.status === "BAHAYA" ? "text-red-700" : "text-green-700"}`}
                 >
                   {dataSensor.status}
                 </h3>
               </div>
             </motion.div>
 
+            {/* KARTU 3: SLIDER KONTROL AMBANG BATAS */}
             <motion.div
               variants={itemVariants}
-              className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] shadow-sm border border-slate-200 dark:border-slate-800 flex flex-col justify-center hover-rgb-glow cursor-pointer group"
+              className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-200 flex flex-col justify-center hover-rgb-glow cursor-pointer group"
             >
               <div className="flex items-center gap-2 mb-5">
                 <Settings2
@@ -286,7 +264,6 @@ export default function Dashboard() {
                   Ambang Batas Alarm (ADC)
                 </p>
               </div>
-              {/* Range maksimal dikembalikan penuh ke 4095 menyesuaikan logika ESP32 */}
               <input
                 type="range"
                 min="500"
@@ -294,18 +271,15 @@ export default function Dashboard() {
                 step="50"
                 value={batasBahaya}
                 onChange={ubahBatas}
-                className="w-full accent-blue-600 cursor-grab active:cursor-grabbing h-2.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none shadow-inner transition-all group-hover:accent-purple-500"
+                className="w-full accent-blue-600 cursor-grab active:cursor-grabbing h-2.5 bg-slate-200 rounded-lg appearance-none shadow-inner transition-all group-hover:accent-purple-500"
               />
               <div className="flex justify-between mt-4 text-sm font-bold">
                 <span className="text-slate-400">500</span>
                 <motion.span
                   key={batasBahaya}
                   initial={{ scale: 1.5, color: "#a855f7" }}
-                  animate={{
-                    scale: 1,
-                    color: isDarkMode ? "#60a5fa" : "#2563eb",
-                  }}
-                  className="px-3 py-1 bg-slate-100 dark:bg-slate-800 text-blue-600 dark:text-blue-400 rounded-xl shadow-sm"
+                  animate={{ scale: 1, color: "#2563eb" }}
+                  className="px-3 py-1 bg-slate-100 text-blue-600 rounded-xl shadow-sm"
                 >
                   {batasBahaya}
                 </motion.span>
@@ -313,15 +287,16 @@ export default function Dashboard() {
               </div>
             </motion.div>
 
+            {/* KARTU 4: INFORMASI PERANGKAT */}
             <motion.div
               variants={itemVariants}
-              className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] shadow-sm border border-slate-200 dark:border-slate-800 flex flex-col justify-center space-y-5 hover-rgb-glow cursor-pointer group relative overflow-hidden"
+              className="bg-white p-6 rounded-[2rem] shadow-sm border border-slate-200 flex flex-col justify-center space-y-5 hover-rgb-glow cursor-pointer group relative overflow-hidden"
             >
-              <div className="absolute -bottom-6 -right-6 text-slate-100 dark:text-slate-800/50 group-hover:rotate-12 transition-transform duration-500">
+              <div className="absolute -bottom-6 -right-6 text-slate-100 group-hover:rotate-12 transition-transform duration-500">
                 <Zap size={120} />
               </div>
               <div className="relative z-10 flex items-center gap-4">
-                <div className="p-3.5 bg-slate-100 dark:bg-slate-800 rounded-2xl group-hover:bg-purple-100 dark:group-hover:bg-purple-900/30 group-hover:text-purple-600 dark:group-hover:text-purple-400 transition-colors">
+                <div className="p-3.5 bg-slate-100 rounded-2xl group-hover:bg-purple-100 group-hover:text-purple-600 transition-colors">
                   <Activity size={22} />
                 </div>
                 <div>
@@ -334,7 +309,7 @@ export default function Dashboard() {
                 </div>
               </div>
               <div className="relative z-10 flex items-center gap-4">
-                <div className="p-3.5 bg-slate-100 dark:bg-slate-800 rounded-2xl group-hover:bg-green-100 dark:group-hover:bg-green-900/30 group-hover:text-green-600 dark:group-hover:text-green-400 transition-colors">
+                <div className="p-3.5 bg-slate-100 rounded-2xl group-hover:bg-green-100 group-hover:text-green-600 transition-colors">
                   <Wifi size={22} />
                 </div>
                 <div>
@@ -351,9 +326,10 @@ export default function Dashboard() {
 
           {/* AREA BAWAH: GRAFIK & TABEL */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* PANEL GRAFIK REAL-TIME */}
             <motion.div
               variants={itemVariants}
-              className="lg:col-span-2 bg-white dark:bg-slate-900 p-6 md:p-8 rounded-[2rem] shadow-sm border border-slate-200 dark:border-slate-800 h-[450px] flex flex-col hover-rgb-glow"
+              className="lg:col-span-2 bg-white p-6 md:p-8 rounded-[2rem] shadow-sm border border-slate-200 h-[450px] flex flex-col hover-rgb-glow"
             >
               <h3 className="text-xl font-bold mb-6 flex items-center gap-3">
                 <Activity className="text-blue-500" /> Live Data Stream
@@ -366,18 +342,17 @@ export default function Dashboard() {
                   >
                     <CartesianGrid
                       strokeDasharray="3 3"
-                      stroke={isDarkMode ? "#1e293b" : "#e2e8f0"}
+                      stroke="#e2e8f0"
                       vertical={false}
                     />
                     <XAxis
                       dataKey="waktu"
-                      stroke={isDarkMode ? "#64748b" : "#94a3b8"}
+                      stroke="#64748b"
                       fontSize={12}
                       tickMargin={15}
                     />
-                    {/* Sumbu Y diganti keterangannya */}
                     <YAxis
-                      stroke={isDarkMode ? "#64748b" : "#94a3b8"}
+                      stroke="#64748b"
                       fontSize={12}
                       domain={[0, 4095]}
                       tickCount={6}
@@ -389,7 +364,7 @@ export default function Dashboard() {
                         offset={-5}
                         style={{
                           textAnchor: "middle",
-                          fill: isDarkMode ? "#94a3b8" : "#475569",
+                          fill: "#475569",
                           fontSize: 13,
                           fontWeight: 500,
                         }}
@@ -399,8 +374,8 @@ export default function Dashboard() {
                       contentStyle={{
                         borderRadius: "16px",
                         border: "none",
-                        backgroundColor: isDarkMode ? "#0f172a" : "#ffffff",
-                        color: isDarkMode ? "#f8fafc" : "#0f172a",
+                        backgroundColor: "#ffffff",
+                        color: "#0f172a",
                         boxShadow: "0 20px 25px -5px rgb(0 0 0 / 0.2)",
                       }}
                     />
@@ -421,7 +396,7 @@ export default function Dashboard() {
                       dot={{
                         r: 5,
                         strokeWidth: 3,
-                        fill: isDarkMode ? "#0f172a" : "#ffffff",
+                        fill: "#ffffff",
                         stroke: "#3b82f6",
                       }}
                       activeDot={{
@@ -447,17 +422,15 @@ export default function Dashboard() {
               </div>
             </motion.div>
 
+            {/* PANEL TABEL RIWAYAT LOG */}
             <motion.div
               variants={itemVariants}
-              className="bg-white dark:bg-slate-900 p-6 md:p-8 rounded-[2rem] shadow-sm border border-slate-200 dark:border-slate-800 h-[450px] flex flex-col hover-rgb-glow"
+              className="bg-white p-6 md:p-8 rounded-[2rem] shadow-sm border border-slate-200 h-[450px] flex flex-col hover-rgb-glow"
             >
               <div className="flex justify-between items-center mb-6">
                 <div className="flex items-center gap-3">
-                  <div className="p-2 bg-slate-100 dark:bg-slate-800 rounded-lg">
-                    <Table2
-                      size={20}
-                      className="text-slate-600 dark:text-slate-300"
-                    />
+                  <div className="p-2 bg-slate-100 rounded-lg">
+                    <Table2 size={20} className="text-slate-600" />
                   </div>
                   <h3 className="text-xl font-bold">Log Data</h3>
                 </div>
@@ -470,14 +443,13 @@ export default function Dashboard() {
                   <Download size={18} /> Ekspor
                 </motion.button>
               </div>
-              <div className="overflow-y-auto flex-1 pr-3 rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 shadow-inner custom-scrollbar">
+              <div className="overflow-y-auto flex-1 pr-3 rounded-2xl border border-slate-100 bg-slate-50 shadow-inner custom-scrollbar">
                 <table className="w-full text-sm text-left">
-                  <thead className="sticky top-0 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm z-10">
-                    <tr className="text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
+                  <thead className="sticky top-0 bg-white/90 backdrop-blur-sm z-10">
+                    <tr className="text-slate-500 border-b border-slate-200">
                       <th className="py-4 px-5 font-bold uppercase tracking-wider text-xs">
                         Waktu
                       </th>
-                      {/* Tabel header diganti keterangannya */}
                       <th className="py-4 px-5 font-bold uppercase tracking-wider text-xs text-right">
                         Analog
                       </th>
@@ -490,14 +462,14 @@ export default function Dashboard() {
                         animate={{ opacity: 1, x: 0 }}
                         transition={{ duration: 0.4, type: "spring" }}
                         key={index}
-                        className="border-b border-slate-100 dark:border-slate-800/50 hover:bg-white dark:hover:bg-slate-800 transition-colors last:border-0 group"
+                        className="border-b border-slate-100 hover:bg-white transition-colors last:border-0 group"
                       >
-                        <td className="py-3 px-5 text-slate-600 dark:text-slate-400 font-medium group-hover:text-blue-500 transition-colors">
+                        <td className="py-3 px-5 text-slate-600 font-medium group-hover:text-blue-500 transition-colors">
                           {data.waktu}
                         </td>
                         <td className="py-3 px-5 text-right font-black">
                           <span
-                            className={`px-3 py-1.5 rounded-lg shadow-sm ${data.gas >= batasBahaya ? "bg-red-500 text-white" : "bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700"}`}
+                            className={`px-3 py-1.5 rounded-lg shadow-sm ${data.gas >= batasBahaya ? "bg-red-500 text-white" : "bg-white text-slate-700 border border-slate-200"}`}
                           >
                             {data.gas}
                           </span>
