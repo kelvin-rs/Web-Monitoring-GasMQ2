@@ -291,7 +291,7 @@ export default function Dashboard() {
             <input
               type="range"
               min="1500"
-              max="4000"
+              max="4095"
               step="100"
               value={batasBahaya}
               onChange={ubahBatas}
@@ -302,7 +302,7 @@ export default function Dashboard() {
               <span className="text-blue-600 px-2 py-1 bg-blue-50 rounded-lg">
                 {batasBahaya}
               </span>
-              <span className="text-slate-400">4000</span>
+              <span className="text-slate-400">4095</span>
             </div>
           </motion.div>
 
