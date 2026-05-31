@@ -1,8 +1,19 @@
-"use client";
+/**
+ * SISTEM ANTARMUKA PEMANTAUAN IOT (Web Dashboard)
+ * * Framework: Next.js (React) - Client Component
+ * * Deskripsi: Modul front-end ini bertugas sebagai Subscriber (menerima data sensor)
+ * sekaligus Publisher (mengirim ambang batas) menggunakan protokol MQTT via WebSockets (WSS).
+ * Sistem ini dilengkapi dengan manajemen state real-time, visualisasi grafik dinamis,
+ * notifikasi Telegram (REST API), dan fitur ekspor log data ke CSV.
+ */
 
-// 1. IMPOR LIBRARY YANG DIBUTUHKAN
-import { useEffect, useState, useRef } from "react";
-import mqtt from "mqtt";
+"use client"; // Direktif Next.js: Memaksa komponen ini di-render di sisi klien (Browser) karena menggunakan Hooks dan WebSockets
+
+// ==========================================
+// 1. IMPOR PUSTAKA (DEPENDENCIES)
+// ==========================================
+import { useEffect, useState, useRef } from "react"; // React Hooks untuk manajemen siklus hidup dan memori komponen
+import mqtt from "mqtt"; // Pustaka klien MQTT untuk menjembatani komunikasi browser dengan broker IoT
 import {
   LineChart,
   Line,
@@ -12,7 +23,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   Label,
-} from "recharts"; // Untuk grafik data
+} from "recharts"; // Pustaka visualisasi data berbasis SVG untuk merender grafik real-time
 import {
   AlertTriangle,
   CheckCircle2,
@@ -22,36 +33,43 @@ import {
   Download,
   Settings2,
   Table2,
-} from "lucide-react"; // Ikon antarmuka
-import { motion } from "framer-motion"; // Untuk animasi elemen UI
+  Volume2,
+  VolumeX,
+} from "lucide-react"; // Pustaka ikon vektor untuk antarmuka pengguna
+import { motion } from "framer-motion"; // Pustaka animasi fisika (spring/tween) untuk interaksi UI/UX
 
 export default function Dashboard() {
   // ==========================================
-  // 2. DEKLARASI STATE (PENYIMPAN DATA UI)
+  // 2. MANAJEMEN STATE (UI TRIGGERS)
   // ==========================================
+  // useState digunakan untuk variabel yang, jika nilainya berubah, akan memaksa React untuk merender ulang (update) layar
   const [dataSensor, setDataSensor] = useState({
     kadar_gas: 0,
     status: "Menunggu...",
   });
-  const [isConnected, setIsConnected] = useState(false);
-  const [grafikData, setGrafikData] = useState([]); // Menyimpan array riwayat data untuk grafik & tabel
-  const [batasBahaya, setBatasBahaya] = useState(2000); // State untuk mengatur tampilan UI Slider
+  const [isConnected, setIsConnected] = useState(false); // Indikator status koneksi WebSocket
+  const [grafikData, setGrafikData] = useState([]); // Array struktur data [{waktu, gas}] untuk diumpankan ke Recharts dan Tabel
+  const [batasBahaya, setBatasBahaya] = useState(2000); // Nilai slider untuk tampilan UI
 
   // ==========================================
-  // 3. DEKLARASI REF (PENYIMPAN DATA LATAR BELAKANG)
+  // 3. MANAJEMEN REF (BACKGROUND DATA)
   // ==========================================
-  // useRef digunakan untuk menyimpan data yang tidak memicu render ulang (re-render) pada UI saat nilainya berubah
-  const mqttClientRef = useRef(null);
-  const waktuTelegramTerakhir = useRef(0); // Timer untuk mencegah bot Telegram melakukan spam
-  const batasBahayaRef = useRef(2000); // Menyimpan nilai batas terkini agar bisa dibaca oleh fungsi MQTT di latar belakang
+  // useRef digunakan untuk menyimpan referensi atau nilai yang bisa diubah (mutable) secara sinkron
+  // TANPA memicu render ulang layar, sangat krusial untuk mencegah memory leak pada event listener MQTT.
+  const mqttClientRef = useRef(null); // Menyimpan instance koneksi MQTT agar bisa diakses fungsi lain di luar useEffect
+  const waktuTelegramTerakhir = useRef(0); // Pencatat waktu (timestamp) untuk algoritma debounce/anti-spam Telegram
+  const batasBahayaRef = useRef(2000); // Menyalin nilai batas agar selalu valid saat dibaca oleh callback MQTT di latar belakang
+  const audioRef = useRef(null); // Referensi langsung (DOM node) ke elemen <audio> HTML5 untuk kontrol play/pause
 
   // ==========================================
-  // 4. FUNGSI PENGIRIMAN TELEGRAM
+  // 4. FUNGSI EKSTERNAL (REST API TELEGRAM)
   // ==========================================
+  // Fungsi asinkron untuk melakukan HTTP POST request ke server Telegram
   const kirimTelegram = async (kadarGas, batas) => {
-    const sekarang = Date.now();
+    const sekarang = Date.now(); // Mengambil waktu UNIX saat ini dalam milidetik
 
-    // Sistem Anti-Spam: Pesan hanya akan dikirim jika sudah lewat 10 detik dari pesan sebelumnya
+    // Mekanisme Rate-Limiting (Anti-Spam):
+    // Menghentikan eksekusi fungsi jika jarak dari pesan terakhir belum mencapai 10.000 ms (10 detik)
     if (sekarang - waktuTelegramTerakhir.current < 10000) return;
     waktuTelegramTerakhir.current = sekarang;
 
@@ -59,78 +77,98 @@ export default function Dashboard() {
     const chatId = "6192187715";
     const pesan = `⚠️ PERINGATAN DARURAT!\nKebocoran gas LPG terdeteksi.\nNilai sensor saat ini: ${kadarGas} (Melewati batas toleransi analog ${batas})`;
 
-    // Menembak API Telegram menggunakan HTTP Request biasa
+    // Eksekusi pemanggilan API menggunakan Fetch API bawaan browser
     fetch(
       `https://api.telegram.org/bot${token}/sendMessage?chat_id=${chatId}&text=${encodeURIComponent(pesan)}`,
-    ).catch((err) => console.error("Gagal mengirim Telegram:", err));
+    ).catch((err) => console.error("Gagal mengirim Telegram:", err)); // Error handling
   };
 
   // ==========================================
-  // 5. LIFECYCLE COMPONENT (KONEKSI MQTT)
+  // 5. LIFECYCLE HOOK: KONEKSI & LISTENER MQTT
   // ==========================================
   useEffect(() => {
-    // Membuka koneksi WebSockets ke server public EMQX saat halaman web pertama kali dibuka
+    // Inisialisasi koneksi MQTT menggunakan protokol WSS (WebSocket Secure) melalui port 8084
+    // agar lolos dari aturan Strict Mixed Content Policy pada browser modern
     const client = mqtt.connect("wss://broker.emqx.io:8084/mqtt", {
-      clientId: "Nextjs_Dashboard_" + Math.random().toString(16).slice(2, 8),
+      clientId: "Nextjs_Dashboard_" + Math.random().toString(16).slice(2, 8), // Mencegah bentrok sesi (Session Collision)
     });
 
     mqttClientRef.current = client;
 
-    // Jika koneksi berhasil...
+    // Event Listener: Dijalankan otomatis saat jabat tangan (handshake) WSS berhasil
     client.on("connect", () => {
       setIsConnected(true);
-      // Mulai mendengarkan (subscribe) topik pengiriman data dari ESP32 (Wokwi)
-      client.subscribe("mikrokontroller/kelvin/sensor-gas/data");
+      client.subscribe("mikrokontroller/kelvin/sensor-gas/data"); // Berlangganan topik masuk dari ESP32
     });
 
-    // Jika ada pesan baru masuk dari ESP32...
+    // Event Listener: Dijalankan otomatis setiap kali paket payload masuk dari broker
     client.on("message", (topic, message) => {
       if (topic === "mikrokontroller/kelvin/sensor-gas/data") {
-        // Ekstrak data teks (String) menjadi objek JavaScript (JSON)
+        // Parsing (Penerjemahan) tipe data Buffer/String dari C++ menjadi Objek JSON JavaScript
         const payload = JSON.parse(message.toString());
-        setDataSensor(payload); // Perbarui tampilan kartu UI utama
+        setDataSensor(payload);
 
-        // Dapatkan format jam saat ini
+        // Ekstraksi waktu lokal (Client-side timestamping)
         const waktuSekarang = new Date().toLocaleTimeString("id-ID", {
           hour: "2-digit",
           minute: "2-digit",
           second: "2-digit",
         });
 
-        // Masukkan data baru ke dalam array grafik
+        // Algoritma Sliding Window: Memperbarui array grafik
         setGrafikData((prev) => {
           const newData = [
             ...prev,
             { waktu: waktuSekarang, gas: payload.kadar_gas },
           ];
-          // Buang data paling lama jika jumlah data sudah lebih dari 20 (agar grafik tidak tumpang tindih)
+          // Memori efisiensi: Menghapus elemen array pertama (Shift) jika array melebihi 20 data
           if (newData.length > 20) newData.shift();
           return newData;
         });
 
-        // Evaluasi Keamanan: Bandingkan data sensor dengan nilai ambang batas terbaru
+        // Evaluasi Logika Keselamatan di sisi Client
+        // (Menggunakan .current dari useRef agar nilai batas selalu mutakhir tanpa *stale closure*)
         if (payload.kadar_gas >= batasBahayaRef.current) {
           kirimTelegram(payload.kadar_gas, batasBahayaRef.current);
+
+          // Manajemen Aktuator Audio (Hardware Web API)
+          if (audioRef.current) {
+            audioRef.current
+              .play()
+              .catch((err) =>
+                console.warn(
+                  "Autoplay diblokir browser. Pengguna harus klik area web minimal 1x agar suara keluar.",
+                  err,
+                ),
+              );
+          }
+        } else {
+          // Reset status audio saat kondisi kembali normal
+          if (audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current.currentTime = 0;
+          }
         }
       }
     });
 
-    // Cleanup Function: Putuskan koneksi MQTT secara aman jika pengguna menutup tab browser
+    // Cleanup Function (Unmounting): Dieksekusi otomatis oleh React saat komponen/halaman dihancurkan (ditutup)
+    // Berfungsi memutus soket secara elegan untuk menghindari memory leak di sisi klien maupun server
     return () => {
       if (client) client.end();
     };
-  }, []); // Array kosong [] memastikan fungsi ini hanya berjalan satu kali saat halaman dimuat
+  }, []); // Dependency array kosong memastikan blok ini hanya dieksekusi 1 kali saat Mounting (halaman dimuat)
 
   // ==========================================
-  // 6. FUNGSI KONTROL SLIDER (KIRIM PERINTAH KE WOKWI)
+  // 6. FUNGSI INTERAKSI: SLIDER (PUBLISHER MQTT)
   // ==========================================
   const ubahBatas = (e) => {
-    const nilaiBaru = parseInt(e.target.value); // Ambil angka dari pergerakan slider
+    const nilaiBaru = parseInt(e.target.value);
 
-    setBatasBahaya(nilaiBaru); // Update UI slider
-    batasBahayaRef.current = nilaiBaru; // Update variabel background untuk logika Telegram
+    setBatasBahaya(nilaiBaru); // Sinkronisasi state untuk re-render UI slider
+    batasBahayaRef.current = nilaiBaru; // Sinkronisasi variabel background untuk logika perbandingan
 
-    // Kirim pesan (Publish) ke Wokwi agar alat mengubah nilai batasnya secara sinkron
+    // Melakukan push data (Publish) ke server untuk memperbarui memori mikrokontroler secara over-the-air
     if (mqttClientRef.current && isConnected) {
       mqttClientRef.current.publish(
         "mikrokontroller/kelvin/sensor-gas/batas",
@@ -140,22 +178,24 @@ export default function Dashboard() {
   };
 
   // ==========================================
-  // 7. FUNGSI EXPORT DATA (DOWNLOAD CSV)
+  // 7. FUNGSI EKSTRAKSI DATA: EKSPOR CSV
   // ==========================================
   const downloadCSV = () => {
     if (grafikData.length === 0) return alert("Belum ada data untuk diunduh");
 
-    // Membuat struktur kolom Excel
-    const header = "Waktu,Nilai Analog Sensor\n"
-    // Menggabungkan seluruh isi array data menjadi baris teks yang dipisahkan koma
+    const header = "Waktu,Nilai Analog Sensor\n";
+
+    // Serialisasi array objek JSON menjadi format teks terpisah koma (Comma Separated Values)
     const csvContent = grafikData
       .map((row) => `${row.waktu},${row.gas}`)
       .join("\n");
 
-    // Mengonversi teks menjadi file fisik yang bisa diunduh oleh browser (Blob object)
+    // Pembuatan Blob (Binary Large Object) untuk menyimpan data teks ke dalam memori virtual browser
     const blob = new Blob([header + csvContent], {
       type: "text/csv;charset=utf-8;",
     });
+
+    // Membuat elemen HTML <a> transien (sementara) untuk memicu unduhan sistem operasi
     const link = document.createElement("a");
     const url = URL.createObjectURL(blob);
 
@@ -163,28 +203,36 @@ export default function Dashboard() {
     link.setAttribute("download", `log_gas_${new Date().getTime()}.csv`);
     link.style.visibility = "hidden";
 
-    // Memicu unduhan secara otomatis tanpa mengarahkan ke halaman baru
+    // Injeksi elemen ke DOM, eksekusi klik, lalu destruksi elemen
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
-  // Konfigurasi animasi transisi munculnya elemen antarmuka (Framer Motion)
+  // Objek konfigurasi variasi fisika animasi untuk komponen Framer Motion
   const itemVariants = {
     hidden: { opacity: 0, y: 20 },
     visible: { opacity: 1, y: 0, transition: { duration: 0.5 } },
   };
 
   // ==========================================
-  // 8. STRUKTUR TAMPILAN ANTARMUKA (UI / HTML)
+  // 8. RENDER ANTARMUKA PENGGUNA (JSX / VIRTUAL DOM)
   // ==========================================
   return (
     <main className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans overflow-x-hidden">
+      {/* Node Audio Tersembunyi untuk alarm bahaya */}
+      <audio
+        ref={audioRef}
+        src="https://assets.mixkit.co/active_storage/sfx/995/995-preview.mp3"
+        loop
+        preload="auto"
+      />
+
       <motion.div
         className="max-w-7xl mx-auto space-y-6"
         initial="hidden"
         animate="visible"
-        variants={{ visible: { transition: { staggerChildren: 0.1 } } }} // Menampilkan elemen berurutan (Cascade Effect)
+        variants={{ visible: { transition: { staggerChildren: 0.1 } } }} // Efek animasi kaskade berurutan
       >
         {/* BAGIAN 1: HEADER HALAMAN */}
         <motion.header
@@ -200,7 +248,7 @@ export default function Dashboard() {
             </p>
           </div>
 
-          {/* Indikator Status Koneksi (Merah = Offline, Hijau = Online) */}
+          {/* Indikator Status Kelistrikan/Jaringan WSS */}
           <div
             className={`mt-4 md:mt-0 flex items-center gap-2 px-4 py-2 rounded-full font-medium transition-colors duration-500 ${isConnected ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}
           >
@@ -216,9 +264,9 @@ export default function Dashboard() {
           </div>
         </motion.header>
 
-        {/* BAGIAN 2: GRID KARTU METRIK UTAMA (4 KOLOM) */}
+        {/* BAGIAN 2: GRID KARTU METRIK UTAMA */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {/* Kartu 1: Menampilkan angka kuantitatif nilai gas saat ini */}
+          {/* Kartu 1: Akuisisi Data ADC Sensor */}
           <motion.div
             variants={itemVariants}
             className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between hover:shadow-md transition-shadow"
@@ -238,20 +286,20 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Bar indikator kemiringan bahaya (Progress Bar) */}
+            {/* Progress Bar Termal/Gas */}
             <div className="mt-6 w-full bg-slate-100 h-2 rounded-full overflow-hidden">
               <motion.div
                 className={`h-full ${dataSensor.kadar_gas >= batasBahaya ? "bg-red-500" : "bg-blue-500"}`}
                 initial={{ width: 0 }}
                 animate={{
                   width: `${Math.min((dataSensor.kadar_gas / 4095) * 100, 100)}%`,
-                }} // Konversi nilai maksimum ESP32 (4095) menjadi 100% panjang bar
+                }} // Kalkulasi proporsi bar berdasarkan resolusi maksimum ADC ESP32 (12-bit / 4095)
                 transition={{ duration: 0.3 }}
               />
             </div>
           </motion.div>
 
-          {/* Kartu 2: Menampilkan status AMAN/BAHAYA dengan ikon animasi dinamis */}
+          {/* Kartu 2: Status Evaluasi Kondisi Sistem */}
           <motion.div
             variants={itemVariants}
             className={`p-6 rounded-2xl shadow-sm border flex flex-col justify-center items-center text-center transition-colors duration-500 ${dataSensor.status === "BAHAYA" ? "bg-red-50 border-red-200" : "bg-green-50 border-green-200"}`}
@@ -264,10 +312,14 @@ export default function Dashboard() {
             ) : (
               <CheckCircle2 size={48} className="text-green-500 mb-2" />
             )}
+
             <h3
-              className={`text-xl font-bold ${dataSensor.status === "BAHAYA" ? "text-red-700" : "text-green-700"}`}
+              className={`text-xl font-bold flex items-center justify-center gap-2 ${dataSensor.status === "BAHAYA" ? "text-red-700" : "text-green-700"}`}
             >
               STATUS: {dataSensor.status}
+              {dataSensor.status === "BAHAYA" && (
+                <Volume2 size={24} className="text-red-600 animate-pulse" />
+              )}
             </h3>
             <p
               className={`mt-1 text-xs ${dataSensor.status === "BAHAYA" ? "text-red-600/80" : "text-green-600/80"}`}
@@ -278,7 +330,7 @@ export default function Dashboard() {
             </p>
           </motion.div>
 
-          {/* Kartu 3: Slider interaktif untuk mengubah ambang batas keamanan */}
+          {/* Kartu 3: Input Kontrol Logika Ambang Batas (User Interface to Machine) */}
           <motion.div
             variants={itemVariants}
             className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-center"
@@ -287,7 +339,9 @@ export default function Dashboard() {
               <Settings2 size={20} className="text-slate-600" />
               <p className="text-slate-700 font-bold">Ambang Batas Alarm</p>
             </div>
-            {/* Input Slider dibatasi minimal 1500 agar pengguna tidak asal mematikan alarm keamanan (Safety Practice) */}
+            {/* Praktik Keamanan (Safety Constraint): 
+                Nilai minimal dikunci di 1500 agar operator tidak bisa mematikan 
+                alarm secara tidak sengaja pada kondisi darurat */}
             <input
               type="range"
               min="1500"
@@ -306,7 +360,7 @@ export default function Dashboard() {
             </div>
           </motion.div>
 
-          {/* Kartu 4: Identitas alat fisik (Mockup Hardware) yang sedang dipantau */}
+          {/* Kartu 4: Metadata Perangkat Hardware */}
           <motion.div
             variants={itemVariants}
             className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-center space-y-4 hover:shadow-md transition-shadow"
@@ -336,9 +390,9 @@ export default function Dashboard() {
           </motion.div>
         </div>
 
-        {/* BAGIAN 3: AREA VISUALISASI DATA BAWAH */}
+        {/* BAGIAN 3: AREA VISUALISASI LOG DATA KOMPREHENSIF */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Panel Kiri (Memakan 2/3 layar): Grafik Riwayat Nilai Fluktuasi (Recharts) */}
+          {/* Panel Kiri: Komponen Grafik Cartesian Recharts */}
           <motion.div
             variants={itemVariants}
             className="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200 h-[420px] flex flex-col"
@@ -397,7 +451,7 @@ export default function Dashboard() {
                     }}
                   />
 
-                  {/* Menampilkan Garis Merah statis sebagai indikator visual dari ambang batas */}
+                  {/* Garis Referensi Statis: Memvisualisasikan threshold bahaya */}
                   <Line
                     type="monotone"
                     dataKey={() => batasBahaya}
@@ -408,7 +462,7 @@ export default function Dashboard() {
                     activeDot={false}
                   />
 
-                  {/* Menampilkan Garis Biru pergerakan sensor dengan efek titik menyala */}
+                  {/* Garis Dinamis: Pergerakan log data sensor */}
                   <Line
                     type="monotone"
                     dataKey="gas"
@@ -420,14 +474,14 @@ export default function Dashboard() {
                       strokeWidth: 0,
                       className: "animate-ping",
                     }}
-                    animationDuration={400}
+                    animationDuration={400} // Efek transisi antar data titik
                   />
                 </LineChart>
               </ResponsiveContainer>
             </div>
           </motion.div>
 
-          {/* Panel Kanan (Memakan 1/3 layar): Tabel Data Log & Tombol Ekspor CSV */}
+          {/* Panel Kanan: Render Data Tabular (DOM Table) */}
           <motion.div
             variants={itemVariants}
             className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 h-[420px] flex flex-col"
@@ -440,14 +494,13 @@ export default function Dashboard() {
                 </h3>
               </div>
               <button
-                onClick={downloadCSV}
+                onClick={downloadCSV} // Memicu fungsi download file lokal
                 className="flex items-center gap-2 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition-colors shadow-sm"
               >
                 <Download size={16} /> Ekspor
               </button>
             </div>
 
-            {/* Container tabel dengan fitur scroll internal untuk mencegah halaman meluber ke bawah */}
             <div className="overflow-y-auto flex-1 pr-2 rounded-lg border border-slate-100">
               <table className="w-full text-sm text-left">
                 <thead className="sticky top-0 bg-slate-50 shadow-sm">
@@ -457,14 +510,15 @@ export default function Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {/* Menampilkan array data grafik dalam urutan terbalik agar data terbaru berada di posisi paling atas (Reverse Order) */}
+                  {/* Mapping Array: Menyusun baris tabel dengan fungsi array reverse agar LIFO (Last In First Out) */}
                   {[...grafikData].reverse().map((data, index) => (
                     <tr
-                      key={index}
+                      key={index} // Key unik yang diwajibkan React untuk algoritma rekonsiliasi DOM
                       className="border-b border-slate-50 hover:bg-slate-50 transition-colors last:border-0"
                     >
                       <td className="py-3 px-4 text-slate-600">{data.waktu}</td>
                       <td className="py-3 px-4 font-medium text-slate-800">
+                        {/* Rendering status bahaya secara dinamis menggunakan kondisional Ternary */}
                         <span
                           className={`px-2 py-1 rounded-md ${data.gas >= batasBahaya ? "bg-red-100 text-red-600" : "bg-slate-100"}`}
                         >
@@ -473,7 +527,8 @@ export default function Dashboard() {
                       </td>
                     </tr>
                   ))}
-                  {/* Teks placeholder (pengganti) jika server belum menerima data dari Wokwi sama sekali */}
+
+                  {/* Penanganan State Kosong (Empty State Handling) saat koneksi terputus/awal dimuat */}
                   {grafikData.length === 0 && (
                     <tr>
                       <td
